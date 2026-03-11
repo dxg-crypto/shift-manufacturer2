@@ -157,6 +157,7 @@
           const saveToLocal = () => {
             const data = { year, month, stores, staffList, helpStores, helpAssignments, requests, staffEventTypes, schedule, generationLog };
             localStorage.setItem(STORAGE_KEY, JSON.stringify(data)); 
+            alert("ブラウザに保存しました。");
           };
 
           const resetLocal = () => {
@@ -1294,7 +1295,7 @@
                                                                     const isEvt = staffEventTypes.some(e => e.name === val);
 
                                                                     if (isHelp) {
-                                                                        cellStyle += "text-teal-700 bg-teal-50 border-b-2 border-b-teal-500";
+                                                                        cellStyle += "text-teal-700 bg-teal-50 text-[9px] leading-tight border-b-2 border-b-teal-500";
                                                                         const dest = val.match(/ヘルプ\((.*?)\)/)?.[1] || '';
                                                                         const type = val.match(/\)\((.*?)\)$/)?.[1] || '';
                                                                         content = <div className="flex flex-col leading-tight"><span className="text-[8px] font-normal opacity-80">→{dest}</span><span className="text-[10px] font-black">{type}</span></div>;
