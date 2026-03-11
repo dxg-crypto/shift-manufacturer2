@@ -104,7 +104,6 @@
           const [activeTab, setActiveTab] = useState('settings');
           const [year, setYear] = useState(2025);
           const [month, setMonth] = useState(5);
-          const [shiftMode, setShiftMode] = useState('complex');
           
           const [stores, setStores] = useState([]);
           const [activeStoreId, setActiveStoreId] = useState(null);
@@ -186,7 +185,8 @@
           const addStore = () => {
               if (!newStoreName || stores.length >= 15) return;
               const newId = `st_${Date.now()}`;
-              setStores([...stores, { id: newId, name: newStoreName, reqWeekday: 2, reqWeekend: 3, reqEvent: 4, closedWeekDays: [], specificClosedDays: [], dailyStoreEvents: {} }]);
+              // 店舗ごとにシフト種別（shiftMode）を保持できるように追加
+              setStores([...stores, { id: newId, name: newStoreName, reqWeekday: 2, reqWeekend: 3, reqEvent: 4, closedWeekDays: [], specificClosedDays: [], dailyStoreEvents: {}, shiftMode: 'complex' }]);
               if (!activeStoreId) setActiveStoreId(newId);
               setNewStoreName('');
           };
@@ -223,12 +223,23 @@
               setStaffList(staffList.map(s => s.id === id ? { ...s, [key]: value } : s));
           };
 
-          const moveStaff = (index, direction) => {
-            const newList = [...staffList];
-            const targetIndex = index + direction;
-            if (targetIndex < 0 || targetIndex >= newList.length) return;
-            [newList[index], newList[targetIndex]] = [newList[targetIndex], newList[index]];
-            setStaffList(newList);
+          const moveStaff = (id, direction) => {
+              const index = staffList.findIndex(s => s.id === id);
+              if (index < 0) return;
+              
+              const storeId = staffList[index].homeStoreId;
+              const sameStoreStaffs = staffList.filter(s => s.homeStoreId === storeId);
+              const subIndex = sameStoreStaffs.findIndex(s => s.id === id);
+              const targetSubIndex = subIndex + direction;
+              
+              if (targetSubIndex < 0 || targetSubIndex >= sameStoreStaffs.length) return;
+              
+              const targetId = sameStoreStaffs[targetSubIndex].id;
+              const targetIndex = staffList.findIndex(s => s.id === targetId);
+
+              const newList = [...staffList];
+              [newList[index], newList[targetIndex]] = [newList[targetIndex], newList[index]];
+              setStaffList(newList);
           };
 
           const toggleStaffAttribute = (id, attr) => {
@@ -519,25 +530,28 @@
                     let earlyCount = 0, lateCount = 0;
                     
                     rookies.forEach(r => {
-                        const type = earlyCount <= lateCount ? '早' : '遅';
+                        let type = earlyCount <= lateCount ? '早' : '遅';
+                        if (store.shiftMode === 'simple') type = 'フル';
+                        
                         r.shiftTypes[i] = type;
-                        if (type === '早') earlyCount++; else lateCount++;
+                        if (type === '早') earlyCount++; else if (type === '遅') lateCount++;
                         
                         // ★月前半はトレーナーと同じシフトに同期
                         if (d <= 15) {
                             const t = trainers.find(tr => tr.shiftTypes[i] === "未定");
                             if (t) {
                                 t.shiftTypes[i] = type;
-                                if (type === '早') earlyCount++; else lateCount++;
+                                if (type === '早') earlyCount++; else if (type === '遅') lateCount++;
                             }
                         }
                     });
 
                     trainers.forEach(t => {
                         if (t.shiftTypes[i] === "未定") {
-                            const type = earlyCount <= lateCount ? '早' : '遅';
+                            let type = earlyCount <= lateCount ? '早' : '遅';
+                            if (store.shiftMode === 'simple') type = 'フル';
                             t.shiftTypes[i] = type;
-                            if (type === '早') earlyCount++; else lateCount++;
+                            if (type === '早') earlyCount++; else if (type === '遅') lateCount++;
                         }
                     });
 
@@ -545,9 +559,10 @@
                         if ((allWorkersToday.length === 1) || (allWorkersToday.length % 2 !== 0 && idx === others.length - 1)) {
                             s.shiftTypes[i] = 'フル';
                         } else {
-                            const type = earlyCount <= lateCount ? '早' : '遅';
+                            let type = earlyCount <= lateCount ? '早' : '遅';
+                            if (store.shiftMode === 'simple') type = 'フル';
                             s.shiftTypes[i] = type;
-                            if (type === '早') earlyCount++; else lateCount++;
+                            if (type === '早') earlyCount++; else if (type === '遅') lateCount++;
                         }
                     });
                 });
@@ -676,9 +691,10 @@
                         const trainer = staffSim.find(t => t.homeStoreId === s.homeStoreId && t.isTrainer && !['公休','希望休','定休','有給','-'].includes(t.assigns[target.idx]));
                         s.assigns[target.idx] = st ? st.name : '出勤';
                         s.shiftTypes[target.idx] = trainer ? (trainer.shiftTypes[target.idx] || '早') : '早';
+                        if (st && st.shiftMode === 'simple') s.shiftTypes[target.idx] = 'フル';
                     } else {
                         s.assigns[target.idx] = st ? st.name : '出勤';
-                        s.shiftTypes[target.idx] = '早'; 
+                        s.shiftTypes[target.idx] = (st && st.shiftMode === 'simple') ? 'フル' : '早'; 
                     }
                     s.totalHolidays--;
                     diff++;
@@ -706,18 +722,32 @@
                     if (wCount < targetNum) {
                         const shortage = targetNum - wCount;
                         let helpCandidatesByStore = {};
+                        
                         stores.forEach(otherStore => {
-                            if (otherStore.id !== store.id) {
-                                const available = staffSim.filter(s => s.homeStoreId === otherStore.id && s.assigns[i] === '公休').length;
-                                if (available > 0) helpCandidatesByStore[otherStore.name] = available;
+                            if (otherStore.id !== store.id && !isStoreClosed(otherStore, d)) {
+                                const isEvtO = !!otherStore.dailyStoreEvents[dateKey];
+                                let targetNumO = isEvtO ? otherStore.reqEvent : (isH ? otherStore.reqWeekend : otherStore.reqWeekday);
+                                if (!isH && !isEvtO && targetNumO < 2) targetNumO = 2;
+
+                                let wCountO = 0;
+                                staffSim.forEach(s => {
+                                    if (s.homeStoreId === otherStore.id && !['希望休','公休','定休','有給'].includes(s.assigns[i]) && !s.assigns[i].startsWith('ヘルプ')) wCountO++;
+                                    if (s.assigns[i] === `ヘルプ(${otherStore.name})`) wCountO++;
+                                });
+
+                                const excess = wCountO - targetNumO;
+                                if (excess > 0) {
+                                    helpCandidatesByStore[otherStore.name] = excess;
+                                }
                             }
                         });
+                        
                         let suggestion = "";
                         const helpStoresList = Object.entries(helpCandidatesByStore);
                         if (helpStoresList.length > 0) {
-                            suggestion = `👉提案: ${helpStoresList.map(([n, c]) => `${n}(${c}名)`).join(', ')} の公休スタッフからヘルプを検討してください。`;
+                            suggestion = `👉提案: 人数に余裕がある ${helpStoresList.map(([n, c]) => `${n}(+${c}名)`).join(', ')} からヘルプを検討してください。`;
                         } else {
-                            suggestion = `👉エリア内に公休のスタッフがいません。`;
+                            suggestion = `👉他の店舗に人数の余裕がありません。`;
                         }
                         logs.push(`⚠️ ${d}日(${getWeekDay(d)}) 【${store.name}】 ${shortage}名不足。${suggestion}`);
                     }
@@ -747,7 +777,6 @@
             setSchedule(newSchedule);
             setGenerationLog(logs);
             setActiveTab('result');
-            saveToLocal();
           };
 
           // Excel出力
@@ -967,6 +996,11 @@
                                                 <div className="space-y-1"><label className="text-[9px] font-black text-rose-400">イベント</label><input type="number" value={activeStore.reqEvent} onChange={e => updateStoreSetting(activeStore.id, 'reqEvent', Number(e.target.value))} className="w-full border p-2 rounded-xl text-center font-black bg-rose-50"/></div>
                                             </div>
                                             <div className="pt-4 border-t">
+                                                <p className="text-[9px] font-bold text-slate-400 mb-3 uppercase tracking-widest">Shift Type</p>
+                                                <div className="flex items-center gap-2 bg-slate-100 p-1 rounded-xl w-max mb-4">
+                                                    <button onClick={() => updateStoreSetting(activeStore.id, 'shiftMode', 'complex')} className={`px-4 py-2 text-xs rounded-lg font-bold transition-all ${activeStore.shiftMode !== 'simple' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}>早/遅/フル</button>
+                                                    <button onClick={() => updateStoreSetting(activeStore.id, 'shiftMode', 'simple')} className={`px-4 py-2 text-xs rounded-lg font-bold transition-all ${activeStore.shiftMode === 'simple' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}>フルのみ</button>
+                                                </div>
                                                 <p className="text-[9px] font-bold text-slate-400 mb-3 uppercase tracking-widest">Store Calendar & Closures</p>
                                                 {/* 店舗別カレンダー */}
                                                 <div className="bg-slate-50 p-4 rounded-xl border">
@@ -1021,6 +1055,10 @@
                                             return (
                                                 <div key={s.id} className="bg-white border p-6 rounded-3xl shadow-sm hover:shadow-xl transition-all flex flex-col gap-4 relative group">
                                                     <div className="flex items-center gap-4 border-b pb-4 border-slate-50">
+                                                        <div className="flex flex-col gap-1">
+                                                            <button onClick={() => moveStaff(s.id, -1)} className="text-slate-200 hover:text-blue-500" disabled={idx===0}><Icon name="ChevronUp" size={14}/></button>
+                                                            <button onClick={() => moveStaff(s.id, 1)} className="text-slate-200 hover:text-blue-500" disabled={idx===members.length-1}><Icon name="ChevronDown" size={14}/></button>
+                                                        </div>
                                                         <div className={`w-14 h-14 rounded-2xl flex items-center justify-center ${r.color} shadow-inner`}>{r.icon}</div>
                                                         <div className="flex-1">
                                                             <input type="text" value={s.name} onChange={e => updateStaffInfo(s.id, 'name', e.target.value)} className="font-black text-lg outline-none border-b border-transparent focus:border-blue-500 bg-transparent w-full"/>
